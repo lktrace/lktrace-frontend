@@ -76,10 +76,9 @@ typedef struct {
 static FILE *trace_file = NULL;
 static const char *trace_filename_default = "lk_trace.data";
 
-static GArray *cpu_registers = NULL;
-
 /* per-vcpu saved info */
-#define MAX_VCPU 256
+#define MAX_VCPU 32
+static GArray *cpu_regs[MAX_VCPU];
 static uint64_t saved_last_scause[MAX_VCPU];
 static uint64_t saved_last_a0[MAX_VCPU];
 
@@ -178,10 +177,10 @@ static uint64_t get_register_value_by_index(GArray *regs, size_t index)
     int sz;
     uint64_t value;
 
-    reg_handle = find_register_by_index(cpu_registers, index);
+    reg_handle = find_register_by_index(regs, index);
     buf = g_byte_array_new();
     sz = qemu_plugin_read_register(reg_handle, buf);
-    g_assert(sz == 8);
+    g_assert(sz == 8);  /* rv64 isa */
     memcpy(&value, buf->data, sz);
     g_byte_array_free(buf, TRUE);
     return value;
@@ -416,13 +415,13 @@ static void insn_exec_cb(unsigned int vcpu_idx, void *userdata)
     lk_trace_init(&evt);
 
     for (i = 0; i < 8; ++i) {
-        evt.ax[i] = get_register_value_by_index(cpu_registers, RISCV_A0 + i);
+        evt.ax[i] = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_A0 + i);
         printf("[debug] evt.ax[%ld] = %lx\n", i, evt.ax[i]);
     }
-    evt.usp = get_register_value_by_index(cpu_registers, RISCV_SP);
-    evt.tp = get_register_value_by_index(cpu_registers, RISCV_TP);
-    evt.satp = get_register_value_by_index(cpu_registers, RISCV_SATP);
-    evt.sscratch = get_register_value_by_index(cpu_registers, RISCV_SSCARTCH);
+    evt.usp = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SP);
+    evt.tp = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_TP);
+    evt.satp = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SATP);
+    evt.sscratch = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SSCARTCH);
     printf("[debug] usp = %lx\n", evt.usp);
     printf("[debug] tp = %lx\n", evt.tp);
     printf("[debug] satp = %lx\n", evt.satp);
@@ -431,7 +430,7 @@ static void insn_exec_cb(unsigned int vcpu_idx, void *userdata)
     if (d->is_in) {
         evt.inout = 0;
         evt.cause = RISCV_EXCP_U_ECALL;
-        evt.epc = get_register_value_by_index(cpu_registers, RISCV_PC);
+        evt.epc = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_PC);
         printf("[debug] epc = %lx\n", evt.epc);
 
         if (evt.ax[7] != __NR_exit) {
@@ -441,7 +440,7 @@ static void insn_exec_cb(unsigned int vcpu_idx, void *userdata)
     } else {
         evt.inout = 1;
         evt.cause = saved_last_scause[vcpu_idx];
-        evt.epc = get_register_value_by_index(cpu_registers, RISCV_SEPC);
+        evt.epc = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SEPC);
         printf("[debug] epc = %lx\n", evt.epc);
         evt.orig_a0 = saved_last_a0[vcpu_idx];
     }
@@ -478,6 +477,7 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 
         switch (insn_code) {
         case 0x00000073:  /* ecall */
+            printf("[debug] ecall execute\n");
             d = g_new(cb_data_t, 1);
             d->is_in = 1;
             qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_cb,
@@ -498,19 +498,28 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 /* vcpu init callback: get register list */
 static void vcpu_init_cb(qemu_plugin_id_t id, unsigned int vcpu_idx)
 {
-    cpu_registers = qemu_plugin_get_registers();
+    cpu_regs[vcpu_idx] = qemu_plugin_get_registers();
 }
 
 static void plugin_exit(qemu_plugin_id_t id, void *p)
 {
+    size_t i;
+
     if (trace_file) {
         fclose(trace_file);
-        trace_file = NULL;
     }
-    g_free(cpu_registers);
+    for (i = 0; i < MAX_VCPU; ++i) {
+        if (cpu_regs[i] != NULL) {
+            g_free(cpu_regs[i]);
+        }
+    }
 }
 
-static void plugin_init(qemu_plugin_id_t id)
+/* qemu plugin entry */
+QEMU_PLUGIN_EXPORT int
+qemu_plugin_install(qemu_plugin_id_t id,
+                    const qemu_info_t *info,
+                    int argc, char *argv[])
 {
     const char *fn = getenv("LK_TRACE_FILE");
     if (!fn) {
@@ -520,6 +529,7 @@ static void plugin_init(qemu_plugin_id_t id)
     trace_file = fopen(fn, "w");
     if (!trace_file) {
         fprintf(stderr, "lktrace: failed to open %s\n", fn);
+        return 0;
     }
 
     memset(saved_last_scause, 0, sizeof(saved_last_scause));
@@ -528,14 +538,6 @@ static void plugin_init(qemu_plugin_id_t id)
     qemu_plugin_register_vcpu_init_cb(id, vcpu_init_cb);
     qemu_plugin_register_vcpu_tb_trans_cb(id, tb_trans_cb);
     qemu_plugin_register_atexit_cb(id, plugin_exit, NULL);
-}
 
-/* qemu plugin entry */
-QEMU_PLUGIN_EXPORT int
-qemu_plugin_install(qemu_plugin_id_t id,
-                    const qemu_info_t *info,
-                    int argc, char *argv[])
-{
-    plugin_init(id);
     return 0;
 }
