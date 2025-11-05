@@ -58,7 +58,7 @@ typedef struct {
     uint64_t orig_a0;
     uint64_t satp;
     uint64_t tp;
-    uint64_t sscartch;
+    uint64_t sscratch;
 } trace_event_t;
 
 typedef struct {
@@ -417,22 +417,22 @@ static void insn_exec_cb(unsigned int vcpu_idx, void *userdata)
 
     for (i = 0; i < 8; ++i) {
         evt.ax[i] = get_register_value_by_index(cpu_registers, RISCV_A0 + i);
-        // printf("[debug] evt.ax[%ld] = %lx\n", i, evt.ax[i]);
+        printf("[debug] evt.ax[%ld] = %lx\n", i, evt.ax[i]);
     }
     evt.usp = get_register_value_by_index(cpu_registers, RISCV_SP);
     evt.tp = get_register_value_by_index(cpu_registers, RISCV_TP);
     evt.satp = get_register_value_by_index(cpu_registers, RISCV_SATP);
-    evt.sscartch = get_register_value_by_index(cpu_registers, RISCV_SSCARTCH);
-    // printf("[debug] usp = %lx\n", evt.usp);
-    // printf("[debug] tp = %lx\n", evt.tp);
-    // printf("[debug] satp = %lx\n", evt.satp);
-    // printf("[debug] sscartch = %lx\n", evt.sscartch);
+    evt.sscratch = get_register_value_by_index(cpu_registers, RISCV_SSCARTCH);
+    printf("[debug] usp = %lx\n", evt.usp);
+    printf("[debug] tp = %lx\n", evt.tp);
+    printf("[debug] satp = %lx\n", evt.satp);
+    printf("[debug] sscratch = %lx\n", evt.sscratch);
 
     if (d->is_in) {
         evt.inout = 0;
         evt.cause = RISCV_EXCP_U_ECALL;
         evt.epc = get_register_value_by_index(cpu_registers, RISCV_PC);
-        // printf("[debug] epc = %lx\n", evt.epc);
+        printf("[debug] epc = %lx\n", evt.epc);
 
         if (evt.ax[7] != __NR_exit) {
             saved_last_scause[vcpu_idx] = RISCV_EXCP_U_ECALL;
@@ -442,7 +442,7 @@ static void insn_exec_cb(unsigned int vcpu_idx, void *userdata)
         evt.inout = 1;
         evt.cause = saved_last_scause[vcpu_idx];
         evt.epc = get_register_value_by_index(cpu_registers, RISCV_SEPC);
-        // printf("[debug] epc = %lx\n", evt.epc);
+        printf("[debug] epc = %lx\n", evt.epc);
         evt.orig_a0 = saved_last_a0[vcpu_idx];
     }
 
@@ -457,7 +457,7 @@ static void insn_exec_cb(unsigned int vcpu_idx, void *userdata)
     lk_trace_submit(offset, &evt, f);
     lk_trace_unlock(f);
 
-    // exit(0);
+    exit(0);
 }
 
 /*
