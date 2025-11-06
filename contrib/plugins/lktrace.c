@@ -67,11 +67,6 @@ typedef struct {
     uint32_t size;
 } trace_payload_t;
 
-/* userdata passed to exec callback to indicate in/out */
-typedef struct {
-    int is_in;  /* 1 for syscall-in (ecall), 0 for syscall-out (sret) */
-} cb_data_t;
-
 /* tracing file */
 static FILE *trace_file = NULL;
 static const char *trace_filename_default = "lk_trace.data";
@@ -403,16 +398,21 @@ static void handle_payload_out(trace_event_t *evt, FILE *f)
     }
 }
 
-/* exec callback: called before matched instruction executes */
-static void insn_exec_cb(unsigned int vcpu_idx, void *userdata)
+static void insn_exec_ecall_cb(unsigned int vcpu_idx, void *userdata)
 {
     size_t i;
     trace_event_t evt;
     FILE *f;
     long offset;
-    cb_data_t *d = userdata;
 
     lk_trace_init(&evt);
+
+    // printf("=== debug ===\n");
+    // for (i = 0; i <= 213; ++i) {
+    //     uint64_t reg = get_register_value_by_index(cpu_regs[vcpu_idx], i);
+    //     printf("reg[%ld] = %lx\n", i, reg);
+    // }
+    // printf("=== debug ===\n");
 
     for (i = 0; i < 8; ++i) {
         evt.ax[i] = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_A0 + i);
@@ -427,36 +427,73 @@ static void insn_exec_cb(unsigned int vcpu_idx, void *userdata)
     printf("[debug] satp = %lx\n", evt.satp);
     printf("[debug] sscratch = %lx\n", evt.sscratch);
 
-    if (d->is_in) {
-        evt.inout = 0;
-        evt.cause = RISCV_EXCP_U_ECALL;
-        evt.epc = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_PC);
-        printf("[debug] epc = %lx\n", evt.epc);
+    evt.inout = 0;
+    evt.cause = RISCV_EXCP_U_ECALL;
+    evt.epc = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_PC);
+    printf("[debug] epc = %lx\n", evt.epc);
 
-        if (evt.ax[7] != __NR_exit) {
-            saved_last_scause[vcpu_idx] = RISCV_EXCP_U_ECALL;
-            saved_last_a0[vcpu_idx] = evt.ax[0];
-        }
-    } else {
-        evt.inout = 1;
-        evt.cause = saved_last_scause[vcpu_idx];
-        evt.epc = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SEPC);
-        printf("[debug] epc = %lx\n", evt.epc);
-        evt.orig_a0 = saved_last_a0[vcpu_idx];
+    if (evt.ax[7] != __NR_exit) {
+        saved_last_scause[vcpu_idx] = RISCV_EXCP_U_ECALL;
+        saved_last_a0[vcpu_idx] = evt.ax[0];
     }
 
     /* open file and record */
     f = lk_trace_trylock();
     offset = lk_trace_head(f);
-    if (d->is_in) {
-        handle_payload_in(&evt, f);
-    } else {
-        handle_payload_out(&evt, f);
-    }
+    handle_payload_in(&evt, f);
     lk_trace_submit(offset, &evt, f);
     lk_trace_unlock(f);
 
-    exit(0);
+    static int cnt = 0;
+    if (cnt++ > 1)
+        exit(0);
+}
+
+static void insn_exec_sret_cb(unsigned int vcpu_idx, void *userdata)
+{
+    size_t i;
+    trace_event_t evt;
+    FILE *f;
+    long offset;
+
+    lk_trace_init(&evt);
+
+    // printf("=== debug ===\n");
+    // for (i = 0; i <= 213; ++i) {
+    //     uint64_t reg = get_register_value_by_index(cpu_regs[vcpu_idx], i);
+    //     printf("reg[%ld] = %lx\n", i, reg);
+    // }
+    // printf("=== debug ===\n");
+
+    for (i = 0; i < 8; ++i) {
+        evt.ax[i] = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_A0 + i);
+        printf("[debug] evt.ax[%ld] = %lx\n", i, evt.ax[i]);
+    }
+    evt.usp = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SP);
+    evt.tp = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_TP);
+    evt.satp = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SATP);
+    evt.sscratch = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SSCARTCH);
+    printf("[debug] usp = %lx\n", evt.usp);
+    printf("[debug] tp = %lx\n", evt.tp);
+    printf("[debug] satp = %lx\n", evt.satp);
+    printf("[debug] sscratch = %lx\n", evt.sscratch);
+
+    evt.inout = 1;
+    evt.cause = saved_last_scause[vcpu_idx];
+    evt.epc = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SEPC);
+    printf("[debug] epc = %lx\n", evt.epc);
+    evt.orig_a0 = saved_last_a0[vcpu_idx];
+
+    /* open file and record */
+    f = lk_trace_trylock();
+    offset = lk_trace_head(f);
+    handle_payload_out(&evt, f);
+    lk_trace_submit(offset, &evt, f);
+    lk_trace_unlock(f);
+
+    static int cnt = 0;
+    if (cnt++ > 1)
+        exit(0);
 }
 
 /*
@@ -469,7 +506,6 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
     size_t n = qemu_plugin_tb_n_insns(tb);
     struct qemu_plugin_insn *insn;
     uint32_t insn_code;
-    cb_data_t *d;
 
     for (i = 0; i < n; ++i) {
         insn = qemu_plugin_tb_get_insn(tb, i);
@@ -478,16 +514,13 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
         switch (insn_code) {
         case 0x00000073:  /* ecall */
             printf("[debug] ecall execute\n");
-            d = g_new(cb_data_t, 1);
-            d->is_in = 1;
-            qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_cb,
-                                                   QEMU_PLUGIN_CB_R_REGS, d);
+            qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_ecall_cb,
+                                                   QEMU_PLUGIN_CB_R_REGS, NULL);
             break;
         case 0x10200073:  /* sret */
-            d = g_new(cb_data_t, 1);
-            d->is_in = 0;
-            qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_cb,
-                                                  QEMU_PLUGIN_CB_R_REGS, d);
+            printf("[debug] ecall execute\n");
+            qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_sret_cb,
+                                                  QEMU_PLUGIN_CB_R_REGS, NULL);
             break;
         default:
             break;
