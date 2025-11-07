@@ -77,6 +77,14 @@ static GArray *cpu_regs[MAX_VCPU];
 static uint64_t saved_last_scause[MAX_VCPU];
 static uint64_t saved_last_a0[MAX_VCPU];
 
+/* copy from QEMU's target/riscv/cpu_bits.h */
+#define get_field(reg, mask) (((reg) & \
+                 (uint64_t)(mask)) / ((mask) & ~((mask) << 1)))
+#define set_field(reg, mask, val) (((reg) & ~(uint64_t)(mask)) | \
+                 (((uint64_t)(val) * ((mask) & ~((mask) << 1))) & \
+                 (uint64_t)(mask)))
+#define MSTATUS_SPP         0x00000100
+
 /* RISC-V ABI */
 enum {
     RISCV_SP = 2,
@@ -87,6 +95,7 @@ enum {
     RISCV_SSCARTCH = 74,
     RISCV_SEPC = 75,
     RISCV_SATP = 79,
+    RISCV_MSTATUS = 89,
 };
 
 enum {
@@ -404,38 +413,22 @@ static void insn_exec_ecall_cb(unsigned int vcpu_idx, void *userdata)
     trace_event_t evt;
     FILE *f;
     long offset;
+    uint64_t priv = qemu_plugin_get_priv(vcpu_idx);
+
+    if (priv != 0) return;
 
     lk_trace_init(&evt);
 
-    // printf("=== debug ===\n");
-    // for (i = 0; i <= 213; ++i) {
-    //     uint64_t reg = get_register_value_by_index(cpu_regs[vcpu_idx], i);
-    //     printf("reg[%ld] = %lx\n", i, reg);
-    // }
-    // printf("=== debug ===\n");
-
     for (i = 0; i < 8; ++i) {
         evt.ax[i] = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_A0 + i);
-        printf("[debug] evt.ax[%ld] = %lx\n", i, evt.ax[i]);
     }
     evt.usp = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SP);
     evt.tp = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_TP);
     evt.satp = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SATP);
     evt.sscratch = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SSCARTCH);
-    printf("[debug] usp = %lx\n", evt.usp);
-    printf("[debug] tp = %lx\n", evt.tp);
-    printf("[debug] satp = %lx\n", evt.satp);
-    printf("[debug] sscratch = %lx\n", evt.sscratch);
-
     evt.inout = 0;
     evt.cause = RISCV_EXCP_U_ECALL;
     evt.epc = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_PC);
-    printf("[debug] epc = %lx\n", evt.epc);
-
-    if (evt.ax[7] != __NR_exit) {
-        saved_last_scause[vcpu_idx] = RISCV_EXCP_U_ECALL;
-        saved_last_a0[vcpu_idx] = evt.ax[0];
-    }
 
     /* open file and record */
     f = lk_trace_trylock();
@@ -444,9 +437,10 @@ static void insn_exec_ecall_cb(unsigned int vcpu_idx, void *userdata)
     lk_trace_submit(offset, &evt, f);
     lk_trace_unlock(f);
 
-    static int cnt = 0;
-    if (cnt++ > 1)
-        exit(0);
+    if (evt.ax[7] != __NR_exit) {
+        saved_last_scause[vcpu_idx] = RISCV_EXCP_U_ECALL;
+        saved_last_a0[vcpu_idx] = evt.ax[0];
+    }
 }
 
 static void insn_exec_sret_cb(unsigned int vcpu_idx, void *userdata)
@@ -455,33 +449,26 @@ static void insn_exec_sret_cb(unsigned int vcpu_idx, void *userdata)
     trace_event_t evt;
     FILE *f;
     long offset;
+    uint64_t mstatus, prev_priv;
+
+    mstatus = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_MSTATUS);
+    prev_priv = get_field(mstatus, MSTATUS_SPP);
+    if (prev_priv != 0 || !saved_last_scause[vcpu_idx]) {
+        return;
+    }
 
     lk_trace_init(&evt);
 
-    // printf("=== debug ===\n");
-    // for (i = 0; i <= 213; ++i) {
-    //     uint64_t reg = get_register_value_by_index(cpu_regs[vcpu_idx], i);
-    //     printf("reg[%ld] = %lx\n", i, reg);
-    // }
-    // printf("=== debug ===\n");
-
     for (i = 0; i < 8; ++i) {
         evt.ax[i] = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_A0 + i);
-        printf("[debug] evt.ax[%ld] = %lx\n", i, evt.ax[i]);
     }
     evt.usp = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SP);
     evt.tp = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_TP);
     evt.satp = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SATP);
     evt.sscratch = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SSCARTCH);
-    printf("[debug] usp = %lx\n", evt.usp);
-    printf("[debug] tp = %lx\n", evt.tp);
-    printf("[debug] satp = %lx\n", evt.satp);
-    printf("[debug] sscratch = %lx\n", evt.sscratch);
-
     evt.inout = 1;
     evt.cause = saved_last_scause[vcpu_idx];
     evt.epc = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SEPC);
-    printf("[debug] epc = %lx\n", evt.epc);
     evt.orig_a0 = saved_last_a0[vcpu_idx];
 
     /* open file and record */
@@ -491,9 +478,8 @@ static void insn_exec_sret_cb(unsigned int vcpu_idx, void *userdata)
     lk_trace_submit(offset, &evt, f);
     lk_trace_unlock(f);
 
-    static int cnt = 0;
-    if (cnt++ > 1)
-        exit(0);
+    saved_last_scause[vcpu_idx] = 0;
+    saved_last_a0[vcpu_idx] = 0;
 }
 
 /*
@@ -513,14 +499,12 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 
         switch (insn_code) {
         case 0x00000073:  /* ecall */
-            printf("[debug] ecall execute\n");
             qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_ecall_cb,
                                                    QEMU_PLUGIN_CB_R_REGS, NULL);
             break;
         case 0x10200073:  /* sret */
-            printf("[debug] ecall execute\n");
             qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_sret_cb,
-                                                  QEMU_PLUGIN_CB_R_REGS, NULL);
+                                                   QEMU_PLUGIN_CB_R_REGS, NULL);
             break;
         default:
             break;
