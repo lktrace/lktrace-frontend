@@ -1150,4 +1150,11 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
 QEMU_PLUGIN_API
 uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry);
 
+/**
+ * qemu_plugin_get_priv() - return current privilege level of current vcpu
+ * @vcpu_index: index of vcpu
+ */
+QEMU_PLUGIN_API
+uint64_t qemu_plugin_get_priv(unsigned int vcpu_index);
+
 #endif /* QEMU_QEMU_PLUGIN_H */

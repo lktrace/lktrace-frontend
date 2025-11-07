@@ -47,6 +47,7 @@
 #include "exec/translator.h"
 #include "disas/disas.h"
 #include "plugin.h"
+#include "arch-hooks.h"
 
 /* Uninstall and Reset handlers */
 
@@ -644,3 +645,13 @@ uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry)
     return total;
 }
 
+QEMUPluginArchOps qemu_plugin_arch_ops = {
+    .get_priv = NULL,
+};
+
+uint64_t qemu_plugin_get_priv(unsigned int vcpu_index)
+{
+    if (qemu_plugin_arch_ops.get_priv)
+        return qemu_plugin_arch_ops.get_priv(vcpu_index);
+    return (uint64_t)-1;
+}
