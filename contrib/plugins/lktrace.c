@@ -72,13 +72,16 @@ static FILE *trace_file = NULL;
 static const char *trace_filename_default = "lk_trace.data";
 
 /* per-vcpu saved info */
-#define MAX_VCPU 32
-static GArray *cpu_regs[MAX_VCPU];
-static uint64_t saved_last_scause[MAX_VCPU];
-static uint64_t saved_last_a0[MAX_VCPU];
-static trace_event_t evts[MAX_VCPU];
-static bool is_tracing_ecall[MAX_VCPU];
-static bool is_tracing_sret[MAX_VCPU];
+typedef struct {
+    trace_event_t evt;
+    GArray *cpu_regs;
+    uint64_t saved_last_scause;
+    uint64_t saved_last_a0;
+    bool is_tracing_ecall;
+    bool is_tracing_sret;
+} vcpu_data_t;
+
+static struct qemu_plugin_scoreboard *vcpu_scoreboard;
 
 /* copy from QEMU's target/riscv/cpu_bits.h */
 #define get_field(reg, mask) (((reg) & \
@@ -416,94 +419,95 @@ static void insn_exec_ecall_cb(unsigned int vcpu_idx, void *userdata)
     long offset;
     size_t i;
     uint64_t priv = qemu_plugin_get_priv(vcpu_idx);
-    trace_event_t *evt = &evts[vcpu_idx];
+    vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
 
     if (priv != 0) return;
 
-    lk_trace_init(evt);
+    lk_trace_init(&data->evt);
 
     for (i = 0; i < 8; ++i) {
-        evt->ax[i] = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_A0 + i);
+        data->evt.ax[i] = get_register_value_by_index(data->cpu_regs, RISCV_A0 + i);
     }
-    evt->usp = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SP);
-    evt->tp = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_TP);
-    evt->satp = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SATP);
-    evt->sscratch = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SSCARTCH);
-    evt->inout = 0;
-    evt->cause = RISCV_EXCP_U_ECALL;
-    evt->epc = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_PC);
+    data->evt.usp = get_register_value_by_index(data->cpu_regs, RISCV_SP);
+    data->evt.tp = get_register_value_by_index(data->cpu_regs, RISCV_TP);
+    data->evt.satp = get_register_value_by_index(data->cpu_regs, RISCV_SATP);
+    data->evt.sscratch = get_register_value_by_index(data->cpu_regs, RISCV_SSCARTCH);
+    data->evt.inout = 0;
+    data->evt.cause = RISCV_EXCP_U_ECALL;
+    data->evt.epc = get_register_value_by_index(data->cpu_regs, RISCV_PC);
 
-    if (evt->ax[7] != __NR_exit) {
-        saved_last_scause[vcpu_idx] = RISCV_EXCP_U_ECALL;
-        saved_last_a0[vcpu_idx] = evt->ax[0];
+    if (data->evt.ax[7] != __NR_exit) {
+        data->saved_last_scause = RISCV_EXCP_U_ECALL;
+        data->saved_last_a0 = data->evt.ax[0];
     }
 
     f = lk_trace_trylock();
     offset = lk_trace_head(f);
-    handle_payload_in(evt, f);
-    lk_trace_submit(offset, evt, f);
+    handle_payload_in(&data->evt, f);
+    lk_trace_submit(offset, &data->evt, f);
     lk_trace_unlock(f);
 
-    is_tracing_ecall[vcpu_idx] = true;
+    data->is_tracing_ecall = true;
 }
 
 static void insn_exec_sret_cb(unsigned int vcpu_idx, void *userdata)
 {
     size_t i;
     uint64_t mstatus, prev_priv;
-    trace_event_t *evt = &evts[vcpu_idx];
+    vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
 
-    mstatus = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_MSTATUS);
+    mstatus = get_register_value_by_index(data->cpu_regs, RISCV_MSTATUS);
     prev_priv = get_field(mstatus, MSTATUS_SPP);
-    if (prev_priv != 0 || !saved_last_scause[vcpu_idx]) {
+    if (prev_priv != 0 || !data->saved_last_scause) {
         return;
     }
 
-    lk_trace_init(evt);
+    lk_trace_init(&data->evt);
 
     for (i = 0; i < 8; ++i) {
-        evt->ax[i] = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_A0 + i);
+        data->evt.ax[i] = get_register_value_by_index(data->cpu_regs, RISCV_A0 + i);
     }
-    evt->usp = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SP);
-    evt->tp = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_TP);
-    evt->satp = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SATP);
-    evt->sscratch = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SSCARTCH);
-    evt->inout = 1;
-    evt->cause = saved_last_scause[vcpu_idx];
-    evt->epc = get_register_value_by_index(cpu_regs[vcpu_idx], RISCV_SEPC);
-    evt->orig_a0 = saved_last_a0[vcpu_idx];
+    data->evt.usp = get_register_value_by_index(data->cpu_regs, RISCV_SP);
+    data->evt.tp = get_register_value_by_index(data->cpu_regs, RISCV_TP);
+    data->evt.satp = get_register_value_by_index(data->cpu_regs, RISCV_SATP);
+    data->evt.sscratch = get_register_value_by_index(data->cpu_regs, RISCV_SSCARTCH);
+    data->evt.inout = 1;
+    data->evt.cause = data->saved_last_scause;
+    data->evt.epc = get_register_value_by_index(data->cpu_regs, RISCV_SEPC);
+    data->evt.orig_a0 = data->saved_last_a0;
 
-    saved_last_scause[vcpu_idx] = 0;
-    saved_last_a0[vcpu_idx] = 0;
+    data->saved_last_scause = 0;
+    data->saved_last_a0 = 0;
 
-    is_tracing_sret[vcpu_idx] = true;
+    data->is_tracing_sret = true;
 }
 
 static void insn_exec_general_cb(unsigned int vcpu_idx, void *userdata)
 {
     FILE *f;
     long offset;
-    trace_event_t *evt = &evts[vcpu_idx];
+    vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
 
     /* There should only one event being traced at the same time */
-    g_assert(!(is_tracing_ecall[vcpu_idx]
-            && is_tracing_sret[vcpu_idx]));
+    g_assert(!(data->is_tracing_ecall
+            && data->is_tracing_sret));
 
-    if (is_tracing_ecall[vcpu_idx]) {
-        /* Nothing to do:
+    if (data->is_tracing_ecall) {
+        /* 
+         * Nothing to do:
          * the content read for argv and envp is
          * done in the insn_exec callback.
          */
-    } else if (is_tracing_sret[vcpu_idx]) {
+    } else if (data->is_tracing_sret) {
         f = lk_trace_trylock();
         offset = lk_trace_head(f);
-        handle_payload_out(evt, f);
-        lk_trace_submit(offset, evt, f);
+        handle_payload_out(&data->evt, f);
+        lk_trace_submit(offset, &data->evt, f);
         lk_trace_unlock(f);
     }
 
-    is_tracing_ecall[vcpu_idx] = false;
-    is_tracing_sret[vcpu_idx] = false;
+    data->is_tracing_ecall = false;
+    data->is_tracing_sret = false;
 }
 
 /*
@@ -541,21 +545,16 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 /* vcpu init callback: get register list */
 static void vcpu_init_cb(qemu_plugin_id_t id, unsigned int vcpu_idx)
 {
-    cpu_regs[vcpu_idx] = qemu_plugin_get_registers();
+    vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
+    data->cpu_regs = qemu_plugin_get_registers();
 }
 
 static void plugin_exit(qemu_plugin_id_t id, void *p)
 {
-    size_t i;
-
     if (trace_file) {
         fclose(trace_file);
     }
-    for (i = 0; i < MAX_VCPU; ++i) {
-        if (cpu_regs[i] != NULL) {
-            g_free(cpu_regs[i]);
-        }
-    }
+    qemu_plugin_scoreboard_free(vcpu_scoreboard);
 }
 
 /* qemu plugin entry */
@@ -564,7 +563,6 @@ qemu_plugin_install(qemu_plugin_id_t id,
                     const qemu_info_t *info,
                     int argc, char *argv[])
 {
-    size_t i;
     const char *fn = getenv("LK_TRACE_FILE");
     if (!fn) {
         fn = trace_filename_default;
@@ -576,13 +574,7 @@ qemu_plugin_install(qemu_plugin_id_t id,
         return 0;
     }
 
-    memset(saved_last_scause, 0, sizeof(saved_last_scause));
-    memset(saved_last_a0, 0, sizeof(saved_last_a0));
-
-    for (i = 0; i < MAX_VCPU; ++i) {
-        is_tracing_ecall[i] = false;
-        is_tracing_sret[i] = false;
-    }
+    vcpu_scoreboard = qemu_plugin_scoreboard_new(sizeof(vcpu_data_t));
 
     qemu_plugin_register_vcpu_init_cb(id, vcpu_init_cb);
     qemu_plugin_register_vcpu_tb_trans_cb(id, tb_trans_cb);
