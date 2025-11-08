@@ -203,7 +203,6 @@ static void read_memory_vaddr(uint64_t vaddr, uint8_t *data, size_t len)
         actual_len = buf->len;
         g_assert(actual_len == len);
         memcpy(data, buf->data, actual_len);
-    } else {
     }
 }
 
@@ -413,6 +412,8 @@ static void handle_payload_out(trace_event_t *evt, FILE *f)
 
 static void insn_exec_ecall_cb(unsigned int vcpu_idx, void *userdata)
 {
+    FILE *f;
+    long offset;
     size_t i;
     uint64_t priv = qemu_plugin_get_priv(vcpu_idx);
     trace_event_t *evt = &evts[vcpu_idx];
@@ -436,6 +437,12 @@ static void insn_exec_ecall_cb(unsigned int vcpu_idx, void *userdata)
         saved_last_scause[vcpu_idx] = RISCV_EXCP_U_ECALL;
         saved_last_a0[vcpu_idx] = evt->ax[0];
     }
+
+    f = lk_trace_trylock();
+    offset = lk_trace_head(f);
+    handle_payload_in(evt, f);
+    lk_trace_submit(offset, evt, f);
+    lk_trace_unlock(f);
 
     is_tracing_ecall[vcpu_idx] = true;
 }
@@ -478,16 +485,15 @@ static void insn_exec_general_cb(unsigned int vcpu_idx, void *userdata)
     long offset;
     trace_event_t *evt = &evts[vcpu_idx];
 
-    /* There should only one event be tracing at the same time */
+    /* There should only one event being traced at the same time */
     g_assert(!(is_tracing_ecall[vcpu_idx]
             && is_tracing_sret[vcpu_idx]));
 
     if (is_tracing_ecall[vcpu_idx]) {
-        f = lk_trace_trylock();
-        offset = lk_trace_head(f);
-        handle_payload_in(evt, f);
-        lk_trace_submit(offset, evt, f);
-        lk_trace_unlock(f);
+        /* Nothing to do:
+         * the content read for argv and envp is
+         * done in the insn_exec callback.
+         */
     } else if (is_tracing_sret[vcpu_idx]) {
         f = lk_trace_trylock();
         offset = lk_trace_head(f);
