@@ -495,19 +495,18 @@ static void insn_exec_general_cb(unsigned int vcpu_idx, void *userdata)
     if (data->is_tracing_ecall) {
         /* 
          * Nothing to do:
-         * the content read for argv and envp is
+         * the content read for `handle_payload_in` is
          * done in the insn_exec callback.
          */
+        data->is_tracing_ecall = false;
     } else if (data->is_tracing_sret) {
         f = lk_trace_trylock();
         offset = lk_trace_head(f);
         handle_payload_out(&data->evt, f);
         lk_trace_submit(offset, &data->evt, f);
         lk_trace_unlock(f);
+        data->is_tracing_sret = false;
     }
-
-    data->is_tracing_ecall = false;
-    data->is_tracing_sret = false;
 }
 
 /*
