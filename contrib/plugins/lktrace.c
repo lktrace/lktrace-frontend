@@ -125,71 +125,65 @@ static FILE *lk_trace_trylock(void)
 
 static void lk_trace_unlock(FILE *f)
 {
-    if (f) {
-        fflush(f);
-        funlockfile(f);
+    if (!f) {
+        return;
     }
+    fflush(f);
+    funlockfile(f);
 }
 
 static long lk_trace_head(FILE *f)
 {
-    long offset;
-
-    if (f) {
-        offset = ftell(f);
-        fseek(f, sizeof(trace_event_t), SEEK_CUR);
-        return offset;
+    if (!f) {
+        return 0;
     }
-    return 0;
+    long offset = ftell(f);
+    fseek(f, sizeof(trace_event_t), SEEK_CUR);
+    return offset;
 }
 
 static void lk_trace_payload(uint16_t index, trace_event_t *evt,
                              const void *buf, size_t size, FILE *f)
 {
-    trace_payload_t p;
-
-    if (f) {
-        p.magic = LK_TRACE_PAYLOAD_MAGIC;
-        p.index = index;
-        p.size = size;
-
-        fwrite(&p, sizeof(p), 1, f);
-        fwrite(buf, 1, size, f);
-        evt->totalsize += sizeof(p) + size;
+    if (!f) {
+        return;
     }
+    trace_payload_t p;
+    p.magic = LK_TRACE_PAYLOAD_MAGIC;
+    p.index = index;
+    p.size = size;
+
+    fwrite(&p, sizeof(p), 1, f);
+    fwrite(buf, 1, size, f);
+    evt->totalsize += sizeof(p) + size;
 }
 
 static void lk_trace_submit(long offset, const trace_event_t *evt, FILE *f)
 {
-    long saved_offset;
-
-    if (f) {
-        saved_offset = ftell(f);
-        fseek(f, offset, SEEK_SET);
-        fwrite(evt, sizeof(trace_event_t), 1, f);
-        fseek(f, saved_offset, SEEK_SET);
+    if (!f) {
+        return;
     }
+    long saved_offset = ftell(f);
+    fseek(f, offset, SEEK_SET);
+    fwrite(evt, sizeof(trace_event_t), 1, f);
+    fseek(f, saved_offset, SEEK_SET);
 }
 
 static struct qemu_plugin_register *
 find_register_by_index(GArray *regs, size_t index)
 {
-    qemu_plugin_reg_descriptor *desc;
-
-    desc = &g_array_index(regs, qemu_plugin_reg_descriptor, index);
+    qemu_plugin_reg_descriptor *desc = &g_array_index(
+                            regs, qemu_plugin_reg_descriptor, index);
     return desc->handle;
 }
 
 static uint64_t get_register_value_by_index(GArray *regs, size_t index)
 {
-    struct qemu_plugin_register *reg_handle;
-    GByteArray *buf;
-    int sz;
+    struct qemu_plugin_register *reg_handle = find_register_by_index(regs, index);
+    GByteArray *buf = = g_byte_array_new();
+    int sz = qemu_plugin_read_register(reg_handle, buf);
     uint64_t value;
 
-    reg_handle = find_register_by_index(regs, index);
-    buf = g_byte_array_new();
-    sz = qemu_plugin_read_register(reg_handle, buf);
     g_assert(sz == 8);  /* rv64 isa */
     memcpy(&value, buf->data, sz);
     g_byte_array_free(buf, TRUE);
@@ -198,12 +192,10 @@ static uint64_t get_register_value_by_index(GArray *regs, size_t index)
 
 static void read_memory_vaddr(uint64_t vaddr, uint8_t *data, size_t len)
 {
-    GByteArray *buf;
-    size_t actual_len;
+    GByteArray *buf = g_byte_array_new();
 
-    buf = g_byte_array_new();
     if (qemu_plugin_read_memory_vaddr(vaddr, buf, len)) {
-        actual_len = buf->len;
+        size_t actual_len = buf->len;
         g_assert(actual_len == len);
         memcpy(data, buf->data, actual_len);
     }
@@ -211,9 +203,8 @@ static void read_memory_vaddr(uint64_t vaddr, uint8_t *data, size_t len)
 
 static void formalize_str(uint8_t *data, size_t size)
 {
-    uint8_t *end;
+    uint8_t *end = memchr(data, '\0', size);
 
-    end = memchr(data, '\0', size);
     if (end == NULL) {
         end = data + size;
         end[-1] = '\0';
@@ -268,9 +259,7 @@ static void do_uname(trace_event_t *evt, FILE *f)
 static void handle_string_at_heap(int index, uint64_t size,
                                   trace_event_t *evt, FILE *f)
 {
-    g_autofree uint8_t *data;
-
-    data = g_try_malloc0(size * sizeof(uint8_t));
+    g_autofree uint8_t *data = g_try_malloc0(size * sizeof(uint8_t));
     if (data == NULL) {
         fprintf(stderr, "lktrace: g_try_malloc0 failed\n");
         return;
@@ -283,20 +272,16 @@ static void handle_string_at_heap(int index, uint64_t size,
 
 static void do_write_event(trace_event_t *evt, FILE *f)
 {
-    uint64_t actual_write_size;
-
     if (evt->orig_a0 == 1 || evt->orig_a0 == 2) {
-        actual_write_size = evt->ax[0] + 1;
+        uint64_t actual_write_size = evt->ax[0] + 1;
         handle_string_at_heap(1, actual_write_size, evt, f);
     }
 }
 
 static void do_read_event(trace_event_t *evt, FILE *f)
 {
-    uint64_t actual_read_size;
-
     if (evt->orig_a0 == 0) {
-        actual_read_size = evt->ax[0] + 1;
+        uint64_t actual_read_size = evt->ax[0] + 1;
         handle_string_at_heap(1, actual_read_size, evt, f);
     }
 }
@@ -415,9 +400,6 @@ static void handle_payload_out(trace_event_t *evt, FILE *f)
 
 static void insn_exec_ecall_cb(unsigned int vcpu_idx, void *userdata)
 {
-    FILE *f;
-    long offset;
-    size_t i;
     uint64_t priv = qemu_plugin_get_priv(vcpu_idx);
     vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
 
@@ -425,7 +407,7 @@ static void insn_exec_ecall_cb(unsigned int vcpu_idx, void *userdata)
 
     lk_trace_init(&data->evt);
 
-    for (i = 0; i < 8; ++i) {
+    for (size_t i = 0; i < 8; ++i) {
         data->evt.ax[i] = get_register_value_by_index(data->cpu_regs, RISCV_A0 + i);
     }
     data->evt.usp = get_register_value_by_index(data->cpu_regs, RISCV_SP);
@@ -441,8 +423,8 @@ static void insn_exec_ecall_cb(unsigned int vcpu_idx, void *userdata)
         data->saved_last_a0 = data->evt.ax[0];
     }
 
-    f = lk_trace_trylock();
-    offset = lk_trace_head(f);
+    FILE *f = lk_trace_trylock();
+    long offset = lk_trace_head(f);
     handle_payload_in(&data->evt, f);
     lk_trace_submit(offset, &data->evt, f);
     lk_trace_unlock(f);
@@ -452,19 +434,16 @@ static void insn_exec_ecall_cb(unsigned int vcpu_idx, void *userdata)
 
 static void insn_exec_sret_cb(unsigned int vcpu_idx, void *userdata)
 {
-    size_t i;
-    uint64_t mstatus, prev_priv;
     vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
-
-    mstatus = get_register_value_by_index(data->cpu_regs, RISCV_MSTATUS);
-    prev_priv = get_field(mstatus, MSTATUS_SPP);
+    uint64_t mstatus = get_register_value_by_index(data->cpu_regs, RISCV_MSTATUS);
+    uint64_t prev_priv = get_field(mstatus, MSTATUS_SPP);
     if (prev_priv != 0 || !data->saved_last_scause) {
         return;
     }
 
     lk_trace_init(&data->evt);
 
-    for (i = 0; i < 8; ++i) {
+    for (size_t i = 0; i < 8; ++i) {
         data->evt.ax[i] = get_register_value_by_index(data->cpu_regs, RISCV_A0 + i);
     }
     data->evt.usp = get_register_value_by_index(data->cpu_regs, RISCV_SP);
@@ -484,8 +463,6 @@ static void insn_exec_sret_cb(unsigned int vcpu_idx, void *userdata)
 
 static void insn_exec_general_cb(unsigned int vcpu_idx, void *userdata)
 {
-    FILE *f;
-    long offset;
     vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
 
     /* There should only one event being traced at the same time */
@@ -500,8 +477,8 @@ static void insn_exec_general_cb(unsigned int vcpu_idx, void *userdata)
          */
         data->is_tracing_ecall = false;
     } else if (data->is_tracing_sret) {
-        f = lk_trace_trylock();
-        offset = lk_trace_head(f);
+        FILE *f = lk_trace_trylock();
+        long offset = lk_trace_head(f);
         handle_payload_out(&data->evt, f);
         lk_trace_submit(offset, &data->evt, f);
         lk_trace_unlock(f);
@@ -515,13 +492,11 @@ static void insn_exec_general_cb(unsigned int vcpu_idx, void *userdata)
  */
 static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 {
-    size_t i;
     size_t n = qemu_plugin_tb_n_insns(tb);
-    struct qemu_plugin_insn *insn;
-    uint32_t insn_code;
 
-    for (i = 0; i < n; ++i) {
-        insn = qemu_plugin_tb_get_insn(tb, i);
+    for (size_t i = 0; i < n; ++i) {
+        struct qemu_plugin_insn *insn = qemu_plugin_tb_get_insn(tb, i);
+        uint32_t insn_code;
         qemu_plugin_insn_data(insn, &insn_code, sizeof(insn_code));
 
         switch (insn_code) {
