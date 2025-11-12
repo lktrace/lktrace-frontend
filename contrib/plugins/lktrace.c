@@ -30,6 +30,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 #define __NR_write      64
 #define __NR_writev     66
 #define __NR_fstatat    79
+#define __NR_fstat      80
 #define __NR_exit       93
 #define __NR_rt_sigaction 134
 #define __NR_rt_sigprocmask 135
@@ -245,6 +246,16 @@ static void do_fstatat_out(trace_event_t *evt, FILE *f)
     }
 }
 
+static void do_fstat_out(trace_event_t *evt, FILE *f)
+{
+    uint8_t data[128];
+
+    if (evt->ax[0] == 0) {
+        read_memory_vaddr(evt->ax[1], data, sizeof(data));
+        lk_trace_payload(1, evt, data, sizeof(data), f);
+    }
+}
+
 static void do_uname(trace_event_t *evt, FILE *f)
 {
     /* sizeof(struct new_utsname) = 390, 8-bytes-alignment */
@@ -386,6 +397,9 @@ static void handle_payload_out(trace_event_t *evt, FILE *f)
     case __NR_fstatat:
         handle_path(1, evt, f);
         do_fstatat_out(evt, f);
+        break;
+    case __NR_fstat:
+        do_fstat_out(evt, f);
         break;
     case __NR_getcwd:
         handle_path(0, evt, f);
