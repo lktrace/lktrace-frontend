@@ -180,7 +180,7 @@ find_register_by_index(GArray *regs, size_t index)
 static uint64_t get_register_value_by_index(GArray *regs, size_t index)
 {
     struct qemu_plugin_register *reg_handle = find_register_by_index(regs, index);
-    GByteArray *buf = = g_byte_array_new();
+    GByteArray *buf = g_byte_array_new();
     int sz = qemu_plugin_read_register(reg_handle, buf);
     uint64_t value;
 
