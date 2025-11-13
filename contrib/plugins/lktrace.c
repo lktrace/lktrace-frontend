@@ -504,22 +504,29 @@ static void insn_exec_general_cb(unsigned int vcpu_idx, void *userdata)
         lk_trace_unlock(f);
         data->is_tracing_sret = false;
     }
+}
 
-    /* Trace page fault */
+static void vcpu_mem_rw_cb(unsigned int vcpu_idx, qemu_plugin_meminfo_t info,
+                          uint64_t vaddr, void *userdata)
+{
+    vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
+
     uint64_t sepc = get_register_value_by_index(data->cpu_regs, RISCV_SEPC);
-    uint64_t scause = get_register_value_by_index(data->cpu_regs, RISCV_SCAUSE);
-    uint64_t stval = get_register_value_by_index(data->cpu_regs, RISCV_STVAL);
-    uint64_t priv = qemu_plugin_get_priv(vcpu_idx);
+    /* Each page fault only be printed once. */
+    if (data->saved_last_sepc == sepc) {
+        return;
+    }
 
+    uint64_t scause = get_register_value_by_index(data->cpu_regs, RISCV_SCAUSE);
     if (scause == RISCV_EXCP_INST_PAGE_FAULT ||
         scause == RISCV_EXCP_LOAD_PAGE_FAULT ||
         scause == RISCV_EXCP_STORE_PAGE_FAULT)
     {
-        /* Each page fault only be printed once. */
-        if (data->saved_last_sepc != sepc) {
-            printf("#PF: cause:%lx, epc:%lx, badaddr:%lx priv:%lx\n", scause, sepc, stval, priv);
-            data->saved_last_sepc = sepc;
-        }
+        uint64_t stval = get_register_value_by_index(data->cpu_regs, RISCV_STVAL);
+        uint64_t priv = qemu_plugin_get_priv(vcpu_idx);
+        printf("#PF: cause:%lx, epc:%lx, badaddr:%lx priv:%lx\n",
+               scause, sepc, stval, priv);
+        data->saved_last_sepc = sepc;
     }
 }
 
@@ -550,6 +557,11 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
                                                    QEMU_PLUGIN_CB_R_REGS, NULL);
             break;
         }
+
+        /* Register memory access callback to trace page fault */
+        qemu_plugin_register_vcpu_mem_cb(insn, vcpu_mem_rw_cb,
+                                         QEMU_PLUGIN_CB_R_REGS,
+                                         QEMU_PLUGIN_MEM_RW, NULL);
     }
 }
 
