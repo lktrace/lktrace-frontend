@@ -77,6 +77,7 @@ typedef struct {
     trace_event_t evt;
     GArray *cpu_regs;
     uint64_t saved_last_scause;
+    uint64_t saved_last_sepc;
     uint64_t saved_last_a0;
     bool is_tracing_ecall;
     bool is_tracing_sret;
@@ -101,12 +102,17 @@ enum {
     RISCV_PC = 32,
     RISCV_SSCARTCH = 74,
     RISCV_SEPC = 75,
+    RISCV_SCAUSE = 76,
+    RISCV_STVAL = 77,
     RISCV_SATP = 79,
     RISCV_MSTATUS = 89,
 };
 
 enum {
     RISCV_EXCP_U_ECALL = 8,
+    RISCV_EXCP_INST_PAGE_FAULT = 0xc,
+    RISCV_EXCP_LOAD_PAGE_FAULT = 0xd,
+    RISCV_EXCP_STORE_PAGE_FAULT = 0xf,
 };
 
 static void lk_trace_init(trace_event_t *evt)
@@ -497,6 +503,23 @@ static void insn_exec_general_cb(unsigned int vcpu_idx, void *userdata)
         lk_trace_submit(offset, &data->evt, f);
         lk_trace_unlock(f);
         data->is_tracing_sret = false;
+    }
+
+    /* Trace page fault */
+    uint64_t sepc = get_register_value_by_index(data->cpu_regs, RISCV_SEPC);
+    uint64_t scause = get_register_value_by_index(data->cpu_regs, RISCV_SCAUSE);
+    uint64_t stval = get_register_value_by_index(data->cpu_regs, RISCV_STVAL);
+    uint64_t priv = qemu_plugin_get_priv(vcpu_idx);
+
+    if (scause == RISCV_EXCP_INST_PAGE_FAULT ||
+        scause == RISCV_EXCP_LOAD_PAGE_FAULT ||
+        scause == RISCV_EXCP_STORE_PAGE_FAULT)
+    {
+        /* Each page fault only be printed once. */
+        if (data->saved_last_sepc != sepc) {
+            printf("#PF: cause:%lx, epc:%lx, badaddr:%lx priv:%lx\n", scause, sepc, stval, priv);
+            data->saved_last_sepc = sepc;
+        }
     }
 }
 
