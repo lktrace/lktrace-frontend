@@ -50,9 +50,12 @@ typedef struct {
     uint16_t magic;
     uint16_t headsize;
     uint32_t totalsize;
-    uint64_t inout;
+    uint64_t inout;         /* syscall in/out */
+    uint64_t exception;     /* is non-syscall exception ? */
     uint64_t cause;
     uint64_t epc;
+    uint64_t tval;
+    uint64_t cur_priv;
     uint64_t ax[8];
     uint64_t usp;
     uint64_t stack[8];
@@ -522,10 +525,17 @@ static void vcpu_mem_rw_cb(unsigned int vcpu_idx, qemu_plugin_meminfo_t info,
         scause == RISCV_EXCP_LOAD_PAGE_FAULT ||
         scause == RISCV_EXCP_STORE_PAGE_FAULT)
     {
-        uint64_t stval = get_register_value_by_index(data->cpu_regs, RISCV_STVAL);
-        uint64_t priv = qemu_plugin_get_priv(vcpu_idx);
-        printf("#PF: cause:%lx, epc:%lx, badaddr:%lx priv:%lx\n",
-               scause, sepc, stval, priv);
+        lk_trace_init(&data->evt);
+        data->evt.exception = 1;
+        data->evt.epc = sepc;
+        data->evt.cause = scause;
+        data->evt.tval = get_register_value_by_index(data->cpu_regs, RISCV_STVAL);
+        data->evt.cur_priv = qemu_plugin_get_priv(vcpu_idx);
+        FILE *f = lk_trace_trylock();
+        long offset = lk_trace_head(f);
+        lk_trace_submit(offset, &data->evt, f);
+        lk_trace_unlock(f);
+
         data->saved_last_sepc = sepc;
     }
 }
