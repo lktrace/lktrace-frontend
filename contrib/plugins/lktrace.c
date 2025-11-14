@@ -74,6 +74,13 @@ typedef struct {
 static FILE *trace_file = NULL;
 static const char *trace_filename_default = "lk_trace.data";
 
+/*
+ * tracing control flags
+ * Default choice is tracing all.
+ */
+static bool trace_syscall = true;
+static bool trace_pagefault = true;
+
 /* per-vcpu saved info */
 typedef struct {
     trace_event_t evt;
@@ -553,12 +560,16 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 
         switch (insn_code) {
         case 0x00000073:  /* ecall */
-            qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_ecall_cb,
-                                                   QEMU_PLUGIN_CB_R_REGS, NULL);
+            if (trace_syscall) {
+                qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_ecall_cb,
+                                                       QEMU_PLUGIN_CB_R_REGS, NULL);
+            }
             break;
         case 0x10200073:  /* sret */
-            qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_sret_cb,
-                                                   QEMU_PLUGIN_CB_R_REGS, NULL);
+            if (trace_syscall) {
+                qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_sret_cb,
+                                                       QEMU_PLUGIN_CB_R_REGS, NULL);
+            }
             break;
         default:
             qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_general_cb,
@@ -567,9 +578,11 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
         }
 
         /* Register memory access callback to trace page fault */
-        qemu_plugin_register_vcpu_mem_cb(insn, vcpu_mem_rw_cb,
-                                         QEMU_PLUGIN_CB_R_REGS,
-                                         QEMU_PLUGIN_MEM_RW, NULL);
+        if (trace_pagefault) {
+            qemu_plugin_register_vcpu_mem_cb(insn, vcpu_mem_rw_cb,
+                                             QEMU_PLUGIN_CB_R_REGS,
+                                             QEMU_PLUGIN_MEM_RW, NULL);
+        }
     }
 }
 
@@ -594,9 +607,40 @@ qemu_plugin_install(qemu_plugin_id_t id,
                     const qemu_info_t *info,
                     int argc, char *argv[])
 {
-    const char *fn = getenv("LK_TRACE_FILE");
-    if (!fn) {
-        fn = trace_filename_default;
+    char *fn = g_strdup(trace_filename_default);
+    int opt_errors = 0;
+
+    for (int i = 0; i < argc; i++) {
+        char *opt = argv[i];
+        g_auto(GStrv) tokens = g_strsplit(opt, "=", 2);
+
+        if (g_strv_length(tokens) != 2) {
+            fprintf(stderr, "Invalid parameter format: %s\n", opt);
+            fprintf(stderr, "Expected: name=value\n");
+            opt_errors++;
+            continue;
+        }
+
+        char *name = tokens[0];
+        char *value = tokens[1];
+
+        if (g_strcmp0(name, "trace-syscall") == 0) {
+            if (!qemu_plugin_bool_parse(name, value, &trace_syscall)) {
+                fprintf(stderr, "Boolean parsing failed for %s\n", opt);
+                opt_errors++;
+            }
+        } else if (g_strcmp0(name, "trace-pagefault") == 0) {
+            if (!qemu_plugin_bool_parse(name, value, &trace_pagefault)) {
+                fprintf(stderr, "Boolean parsing failed for %s\n", opt);
+                opt_errors++;
+            }
+        } else if (g_strcmp0(name, "log-file") == 0) {
+            g_free(fn);
+            fn = g_strdup(value);
+        } else {
+            fprintf(stderr, "Unknown parameter: %s\n", name);
+            opt_errors++;
+        }
     }
 
     trace_file = fopen(fn, "w");
@@ -611,5 +655,5 @@ qemu_plugin_install(qemu_plugin_id_t id,
     qemu_plugin_register_vcpu_tb_trans_cb(id, tb_trans_cb);
     qemu_plugin_register_atexit_cb(id, plugin_exit, NULL);
 
-    return 0;
+    return opt_errors;
 }
