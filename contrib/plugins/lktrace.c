@@ -50,8 +50,7 @@ typedef struct {
     uint16_t magic;
     uint16_t headsize;
     uint32_t totalsize;
-    uint64_t inout;         /* syscall in/out */
-    uint64_t exception;     /* is non-syscall exception ? */
+    uint64_t inout;
     uint64_t cause;
     uint64_t epc;
     uint64_t tval;
@@ -526,7 +525,6 @@ static void vcpu_mem_rw_cb(unsigned int vcpu_idx, qemu_plugin_meminfo_t info,
         scause == RISCV_EXCP_STORE_PAGE_FAULT)
     {
         lk_trace_init(&data->evt);
-        data->evt.exception = 1;
         data->evt.epc = sepc;
         data->evt.cause = scause;
         data->evt.tval = get_register_value_by_index(data->cpu_regs, RISCV_STVAL);
