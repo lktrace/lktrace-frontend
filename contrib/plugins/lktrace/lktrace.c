@@ -283,6 +283,11 @@ static void vcpu_init_cb(qemu_plugin_id_t id, unsigned int vcpu_idx)
 {
     vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
     data->cpu_regs = qemu_plugin_get_registers();
+    data->saved_last_scause = 0;
+    data->saved_last_sepc = 0;
+    data->saved_last_a0 = 0;
+    data->is_tracing_ecall = false;
+    data->is_tracing_sret = false;
 }
 
 static void plugin_exit(qemu_plugin_id_t id, void *p)
