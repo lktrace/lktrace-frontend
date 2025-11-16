@@ -151,14 +151,6 @@ static void insn_exec_ecall_cb(unsigned int vcpu_idx, void *userdata)
 {
     vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
 
-    if (trace_pagefault) {
-        trace_page_fault(data, vcpu_idx);
-    }
-
-    if (!trace_syscall) {
-        return;
-    }
-
     uint64_t priv = qemu_plugin_get_priv(vcpu_idx);
     if (priv != 0) return;
 
@@ -192,14 +184,6 @@ static void insn_exec_ecall_cb(unsigned int vcpu_idx, void *userdata)
 static void insn_exec_sret_cb(unsigned int vcpu_idx, void *userdata)
 {
     vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
-
-    if (trace_pagefault) {
-        trace_page_fault(data, vcpu_idx);
-    }
-
-    if (!trace_syscall) {
-        return;
-    }
 
     uint64_t mstatus = get_register_value_by_index(data->cpu_regs, RISCV_MSTATUS);
     uint64_t prev_priv = get_field(mstatus, MSTATUS_SPP);
@@ -266,21 +250,28 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 
     for (size_t i = 0; i < n; ++i) {
         struct qemu_plugin_insn *insn = qemu_plugin_tb_get_insn(tb, i);
+
+        /* Register general callback for all instruction */
+        qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_general_cb,
+                                               QEMU_PLUGIN_CB_R_REGS, NULL);
+
         uint32_t insn_code;
         qemu_plugin_insn_data(insn, &insn_code, sizeof(insn_code));
 
         switch (insn_code) {
         case 0x00000073:  /* ecall */
-            qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_ecall_cb,
-                                                   QEMU_PLUGIN_CB_R_REGS, NULL);
+            if (trace_syscall) {
+                qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_ecall_cb,
+                                                       QEMU_PLUGIN_CB_R_REGS, NULL);
+            }
             break;
         case 0x10200073:  /* sret */
-            qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_sret_cb,
-                                                   QEMU_PLUGIN_CB_R_REGS, NULL);
+            if (trace_syscall) {
+                qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_sret_cb,
+                                                       QEMU_PLUGIN_CB_R_REGS, NULL);
+            }
             break;
         default:
-            qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_general_cb,
-                                                   QEMU_PLUGIN_CB_R_REGS, NULL);
             break;
         }
     }
