@@ -116,6 +116,8 @@ void read_memory_vaddr(uint64_t vaddr, uint8_t *data, size_t len)
         size_t actual_len = buf->len;
         g_assert(actual_len == len);
         memcpy(data, buf->data, actual_len);
+    } else {
+        fprintf(stderr, "%s: failed to read memory at %lx\n", __func__, vaddr);
     }
 }
 
@@ -307,7 +309,7 @@ qemu_plugin_install(qemu_plugin_id_t id,
     char *fn = g_strdup(trace_filename_default);
     int opt_errors = 0;
 
-    for (int i = 0; i < argc; i++) {
+    for (size_t i = 0; i < argc; ++i) {
         char *opt = argv[i];
         g_auto(GStrv) tokens = g_strsplit(opt, "=", 2);
 
