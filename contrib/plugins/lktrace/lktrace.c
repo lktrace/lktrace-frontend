@@ -214,9 +214,9 @@ static void vcpu_mem_rw_cb(unsigned int vcpu_idx, qemu_plugin_meminfo_t info,
 {
     vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
 
-    uint64_t sepc = get_register_value_by_index(data->cpu_regs, RISCV_SEPC);
+    uint64_t stval = get_register_value_by_index(data->cpu_regs, RISCV_STVAL);
     /* Each page fault only be printed once. */
-    if (data->saved_last_sepc == sepc) {
+    if (data->saved_last_stval == stval) {
         return;
     }
 
@@ -226,16 +226,16 @@ static void vcpu_mem_rw_cb(unsigned int vcpu_idx, qemu_plugin_meminfo_t info,
         scause == RISCV_EXCP_STORE_PAGE_FAULT)
     {
         lk_trace_init(&data->evt);
-        data->evt.epc = sepc;
+        data->evt.tval = stval;
         data->evt.cause = scause;
-        data->evt.tval = get_register_value_by_index(data->cpu_regs, RISCV_STVAL);
+        data->evt.epc = get_register_value_by_index(data->cpu_regs, RISCV_SEPC);
         data->evt.cur_priv = qemu_plugin_get_priv(vcpu_idx);
         FILE *f = lk_trace_trylock();
         long offset = lk_trace_head(f);
         lk_trace_submit(offset, &data->evt, f);
         lk_trace_unlock(f);
 
-        data->saved_last_sepc = sepc;
+        data->saved_last_stval = stval;
     }
 }
 
@@ -286,7 +286,7 @@ static void vcpu_init_cb(qemu_plugin_id_t id, unsigned int vcpu_idx)
     vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
     data->cpu_regs = qemu_plugin_get_registers();
     data->saved_last_scause = 0;
-    data->saved_last_sepc = 0;
+    data->saved_last_stval = 0;
     data->saved_last_a0 = 0;
     data->is_tracing_ecall = false;
     data->is_tracing_sret = false;

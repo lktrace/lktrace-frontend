@@ -67,7 +67,7 @@ typedef struct {
     trace_event_t evt;
     GArray *cpu_regs;
     uint64_t saved_last_scause;
-    uint64_t saved_last_sepc;
+    uint64_t saved_last_stval;
     uint64_t saved_last_a0;
     bool is_tracing_ecall;
     bool is_tracing_sret;
