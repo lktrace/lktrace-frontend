@@ -121,11 +121,45 @@ void read_memory_vaddr(uint64_t vaddr, uint8_t *data, size_t len)
     }
 }
 
+static void trace_page_fault(vcpu_data_t *data, unsigned int vcpu_idx)
+{
+    uint64_t stval = get_register_value_by_index(data->cpu_regs, RISCV_STVAL);
+    /* Each page fault only be printed once. */
+    if (data->saved_last_stval == stval) {
+        return;
+    }
+
+    uint64_t scause = get_register_value_by_index(data->cpu_regs, RISCV_SCAUSE);
+    if (scause == RISCV_EXCP_INST_PAGE_FAULT ||
+        scause == RISCV_EXCP_LOAD_PAGE_FAULT ||
+        scause == RISCV_EXCP_STORE_PAGE_FAULT) {
+        lk_trace_init(&data->evt);
+        data->evt.tval = stval;
+        data->evt.cause = scause;
+        data->evt.epc = get_register_value_by_index(data->cpu_regs, RISCV_SEPC);
+        data->evt.cur_priv = qemu_plugin_get_priv(vcpu_idx);
+        FILE *f = lk_trace_trylock();
+        long offset = lk_trace_head(f);
+        lk_trace_submit(offset, &data->evt, f);
+        lk_trace_unlock(f);
+
+        data->saved_last_stval = stval;
+    }
+}
+
 static void insn_exec_ecall_cb(unsigned int vcpu_idx, void *userdata)
 {
-    uint64_t priv = qemu_plugin_get_priv(vcpu_idx);
     vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
 
+    if (trace_pagefault) {
+        trace_page_fault(data, vcpu_idx);
+    }
+
+    if (!trace_syscall) {
+        return;
+    }
+
+    uint64_t priv = qemu_plugin_get_priv(vcpu_idx);
     if (priv != 0) return;
 
     lk_trace_init(&data->evt);
@@ -158,6 +192,15 @@ static void insn_exec_ecall_cb(unsigned int vcpu_idx, void *userdata)
 static void insn_exec_sret_cb(unsigned int vcpu_idx, void *userdata)
 {
     vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
+
+    if (trace_pagefault) {
+        trace_page_fault(data, vcpu_idx);
+    }
+
+    if (!trace_syscall) {
+        return;
+    }
+
     uint64_t mstatus = get_register_value_by_index(data->cpu_regs, RISCV_MSTATUS);
     uint64_t prev_priv = get_field(mstatus, MSTATUS_SPP);
     if (prev_priv != 0 || !data->saved_last_scause) {
@@ -188,6 +231,10 @@ static void insn_exec_general_cb(unsigned int vcpu_idx, void *userdata)
 {
     vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
 
+    if (trace_pagefault) {
+        trace_page_fault(data, vcpu_idx);
+    }
+
     /* There should only one event being traced at the same time */
     g_assert(!(data->is_tracing_ecall
             && data->is_tracing_sret));
@@ -209,36 +256,6 @@ static void insn_exec_general_cb(unsigned int vcpu_idx, void *userdata)
     }
 }
 
-static void vcpu_mem_rw_cb(unsigned int vcpu_idx, qemu_plugin_meminfo_t info,
-                           uint64_t vaddr, void *userdata)
-{
-    vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
-
-    uint64_t stval = get_register_value_by_index(data->cpu_regs, RISCV_STVAL);
-    /* Each page fault only be printed once. */
-    if (data->saved_last_stval == stval) {
-        return;
-    }
-
-    uint64_t scause = get_register_value_by_index(data->cpu_regs, RISCV_SCAUSE);
-    if (scause == RISCV_EXCP_INST_PAGE_FAULT ||
-        scause == RISCV_EXCP_LOAD_PAGE_FAULT ||
-        scause == RISCV_EXCP_STORE_PAGE_FAULT)
-    {
-        lk_trace_init(&data->evt);
-        data->evt.tval = stval;
-        data->evt.cause = scause;
-        data->evt.epc = get_register_value_by_index(data->cpu_regs, RISCV_SEPC);
-        data->evt.cur_priv = qemu_plugin_get_priv(vcpu_idx);
-        FILE *f = lk_trace_trylock();
-        long offset = lk_trace_head(f);
-        lk_trace_submit(offset, &data->evt, f);
-        lk_trace_unlock(f);
-
-        data->saved_last_stval = stval;
-    }
-}
-
 /*
  * translation callback: scan TB for specific instruction
  * encodings and attach exec callbacks
@@ -254,28 +271,17 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 
         switch (insn_code) {
         case 0x00000073:  /* ecall */
-            if (trace_syscall) {
-                qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_ecall_cb,
-                                                       QEMU_PLUGIN_CB_R_REGS, NULL);
-            }
+            qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_ecall_cb,
+                                                   QEMU_PLUGIN_CB_R_REGS, NULL);
             break;
         case 0x10200073:  /* sret */
-            if (trace_syscall) {
-                qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_sret_cb,
-                                                       QEMU_PLUGIN_CB_R_REGS, NULL);
-            }
+            qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_sret_cb,
+                                                   QEMU_PLUGIN_CB_R_REGS, NULL);
             break;
         default:
             qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_general_cb,
                                                    QEMU_PLUGIN_CB_R_REGS, NULL);
             break;
-        }
-
-        /* Register memory access callback to trace page fault */
-        if (trace_pagefault) {
-            qemu_plugin_register_vcpu_mem_cb(insn, vcpu_mem_rw_cb,
-                                             QEMU_PLUGIN_CB_R_REGS,
-                                             QEMU_PLUGIN_MEM_RW, NULL);
         }
     }
 }
