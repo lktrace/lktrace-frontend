@@ -215,10 +215,6 @@ static void insn_exec_general_cb(unsigned int vcpu_idx, void *userdata)
 {
     vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
 
-    if (trace_pagefault) {
-        trace_page_fault(data, vcpu_idx);
-    }
-
     /* There should only one event being traced at the same time */
     g_assert(!(data->is_tracing_ecall
             && data->is_tracing_sret));
@@ -237,6 +233,15 @@ static void insn_exec_general_cb(unsigned int vcpu_idx, void *userdata)
         lk_trace_submit(offset, &data->evt, f);
         lk_trace_unlock(f);
         data->is_tracing_sret = false;
+    }
+
+    /*
+     * Page fault tracing should below the syscall tracing,
+     * because sret tracing as a atomic procedure, is splited
+     * into two code blocks for now.
+     */
+    if (trace_pagefault) {
+        trace_page_fault(data, vcpu_idx);
     }
 }
 
