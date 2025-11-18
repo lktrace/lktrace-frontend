@@ -30,6 +30,13 @@ static const char *trace_filename_default = "lk_trace.data";
 static bool trace_syscall = true;
 static bool trace_pagefault = true;
 
+/*
+ * global debug info
+ * FIXME: May be not accurate when smp > 1.
+ */
+static char *cur_insn_disas = NULL;
+static int cur_syscall_id = -1;
+
 static struct qemu_plugin_scoreboard *vcpu_scoreboard;
 
 void lk_trace_init(trace_event_t *evt)
@@ -132,6 +139,8 @@ void read_memory_vaddr(uint64_t vaddr, uint8_t *data, size_t len)
         memcpy(data, buf->data, actual_len);
     } else {
         fprintf(stderr, "%s: failed to read memory at %lx\n", __func__, vaddr);
+        fprintf(stderr, "=== current instruction: %s\n", cur_insn_disas);
+        fprintf(stderr, "=== current syscall id: %d\n", cur_syscall_id);
     }
 }
 
@@ -185,6 +194,8 @@ static void insn_exec_ecall_cb(unsigned int vcpu_idx, void *userdata)
         data->saved_last_scause = RISCV_EXCP_U_ECALL;
         data->saved_last_a0 = data->evt.ax[0];
     }
+
+    cur_syscall_id = data->evt.ax[7];
 
     FILE *f = lk_trace_trylock();
     long offset = lk_trace_head(f);
@@ -240,6 +251,9 @@ static void insn_exec_general_cb(unsigned int vcpu_idx, void *userdata)
 {
     vcpu_data_t *data = qemu_plugin_scoreboard_find(vcpu_scoreboard, vcpu_idx);
 
+    /* FIXME: should we free memory pointed by `cur_insn_disas` before set ? */
+    cur_insn_disas = userdata;
+
     /* There should only one event being traced at the same time */
     g_assert(!(data->is_tracing_ecall
             && data->is_tracing_sret));
@@ -277,12 +291,13 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
     for (size_t i = 0; i < n; ++i) {
         struct qemu_plugin_insn *insn = qemu_plugin_tb_get_insn(tb, i);
 
-        /* Register general callback for all instruction */
-        qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_general_cb,
-                                               QEMU_PLUGIN_CB_R_REGS, NULL);
-
         uint32_t insn_code;
         qemu_plugin_insn_data(insn, &insn_code, sizeof(insn_code));
+        char *s = qemu_plugin_insn_disas(insn);
+
+        /* Register general callback for all instruction */
+        qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_general_cb,
+                                               QEMU_PLUGIN_CB_R_REGS, s);
 
         switch (insn_code) {
         case 0x00000073:  /* ecall */
