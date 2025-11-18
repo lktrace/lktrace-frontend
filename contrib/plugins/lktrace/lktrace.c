@@ -108,6 +108,20 @@ uint64_t get_register_value_by_index(GArray *regs, size_t index)
     return value;
 }
 
+void set_register_value_by_index(GArray *regs, size_t index, uint64_t value)
+{
+    qemu_plugin_reg_descriptor *desc = &g_array_index(
+                        regs, qemu_plugin_reg_descriptor, index);
+    struct qemu_plugin_register *reg_handle = desc->handle;
+    GByteArray *buf = g_byte_array_new();
+    g_byte_array_set_size(buf, 8);
+    memcpy(buf->data, &value, 8);
+    int sz = qemu_plugin_write_register(reg_handle, buf);
+
+    g_assert(sz == 8);
+    g_byte_array_free(buf, TRUE);
+}
+
 void read_memory_vaddr(uint64_t vaddr, uint8_t *data, size_t len)
 {
     GByteArray *buf = g_byte_array_new();
@@ -208,6 +222,17 @@ static void insn_exec_sret_cb(unsigned int vcpu_idx, void *userdata)
     data->saved_last_scause = 0;
     data->saved_last_a0 = 0;
 
+    FILE *f = lk_trace_trylock();
+    long offset = lk_trace_head(f);
+    mstatus = set_field(mstatus, MSTATUS_SUM, 1);
+    /* Modify sum-bit of mstatus for reading user memory in S-mode. */
+    set_register_value_by_index(data->cpu_regs, RISCV_MSTATUS, mstatus);
+    handle_payload_out(&data->evt, f);
+    mstatus = set_field(mstatus, MSTATUS_SUM, 0);
+    set_register_value_by_index(data->cpu_regs, RISCV_MSTATUS, mstatus);
+    lk_trace_submit(offset, &data->evt, f);
+    lk_trace_unlock(f);
+
     data->is_tracing_sret = true;
 }
 
@@ -227,11 +252,7 @@ static void insn_exec_general_cb(unsigned int vcpu_idx, void *userdata)
          */
         data->is_tracing_ecall = false;
     } else if (data->is_tracing_sret) {
-        FILE *f = lk_trace_trylock();
-        long offset = lk_trace_head(f);
-        handle_payload_out(&data->evt, f);
-        lk_trace_submit(offset, &data->evt, f);
-        lk_trace_unlock(f);
+        /* Nothing to do */
         data->is_tracing_sret = false;
     }
 
@@ -273,7 +294,7 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
         case 0x10200073:  /* sret */
             if (trace_syscall) {
                 qemu_plugin_register_vcpu_insn_exec_cb(insn, insn_exec_sret_cb,
-                                                       QEMU_PLUGIN_CB_R_REGS, NULL);
+                                                       QEMU_PLUGIN_CB_RW_REGS, NULL);
             }
             break;
         default:

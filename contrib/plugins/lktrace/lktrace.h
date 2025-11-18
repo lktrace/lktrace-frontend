@@ -80,6 +80,7 @@ typedef struct {
                  (((uint64_t)(val) * ((mask) & ~((mask) << 1))) & \
                  (uint64_t)(mask)))
 #define MSTATUS_SPP         0x00000100
+#define MSTATUS_SUM         0x00040000
 
 /* RISC-V ABI */
 enum {
@@ -115,6 +116,7 @@ void lk_trace_payload(uint16_t index, trace_event_t *evt,
 void lk_trace_submit(long offset, const trace_event_t *evt, FILE *f);
 
 uint64_t get_register_value_by_index(GArray *regs, size_t index);
+void set_register_value_by_index(GArray *regs, size_t index, uint64_t value);
 void read_memory_vaddr(uint64_t vaddr, uint8_t *data, size_t len);
 
 static inline void formalize_str(uint8_t *data, size_t size)
