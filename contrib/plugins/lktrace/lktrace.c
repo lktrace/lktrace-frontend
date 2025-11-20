@@ -374,6 +374,13 @@ qemu_plugin_install(qemu_plugin_id_t id,
         } else if (g_strcmp0(name, "log-file") == 0) {
             g_free(fn);
             fn = g_strdup(value);
+        } else if (g_strcmp0(name, "trace-module") == 0) {
+            trace_module_name = g_strdup(value);
+        } else if (g_strcmp0(name, "system-map") == 0) {
+            system_map_file = fopen(value, "r");
+            if (!system_map_file) {
+                fprintf(stderr, "lktrace: failed to open %s\n", value);
+            }
         } else {
             fprintf(stderr, "Unknown parameter: %s\n", name);
             opt_errors++;
@@ -386,11 +393,20 @@ qemu_plugin_install(qemu_plugin_id_t id,
         return 0;
     }
 
+    if (trace_module_name && system_map_file) {
+        int nsymbols = load_traced_symbols_from_system_map(
+                            trace_module_name, system_map_file);
+        printf("lktrace: loaded %d symbols for module %s\n",
+                            nsymbols, trace_module_name);
+    }
+
     vcpu_scoreboard = qemu_plugin_scoreboard_new(sizeof(vcpu_data_t));
 
     qemu_plugin_register_vcpu_init_cb(id, vcpu_init_cb);
     qemu_plugin_register_vcpu_tb_trans_cb(id, tb_trans_cb);
     qemu_plugin_register_atexit_cb(id, plugin_exit, NULL);
+
+    g_free(fn);
 
     return opt_errors;
 }

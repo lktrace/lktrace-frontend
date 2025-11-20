@@ -73,6 +73,12 @@ typedef struct {
     bool is_tracing_sret;
 } vcpu_data_t;
 
+/* module symbol struct */
+typedef struct {
+    char *name;
+    uint64_t addr;
+} module_symbol_t;
+
 /* copy from QEMU's target/riscv/cpu_bits.h */
 #define get_field(reg, mask) (((reg) & \
                  (uint64_t)(mask)) / ((mask) & ~((mask) << 1)))
@@ -104,9 +110,11 @@ enum {
     RISCV_EXCP_STORE_PAGE_FAULT = 0xf,
 };
 
+/* syscall.c */
 void handle_payload_in(trace_event_t *evt, FILE *f);
 void handle_payload_out(trace_event_t *evt, FILE *f);
 
+/* lktrace.c */
 void lk_trace_init(trace_event_t *evt);
 FILE *lk_trace_trylock(void);
 void lk_trace_unlock(FILE *f);
@@ -114,10 +122,16 @@ long lk_trace_head(FILE *f);
 void lk_trace_payload(uint16_t index, trace_event_t *evt,
                       const void *buf, size_t size, FILE *f);
 void lk_trace_submit(long offset, const trace_event_t *evt, FILE *f);
-
 uint64_t get_register_value_by_index(GArray *regs, size_t index);
 void set_register_value_by_index(GArray *regs, size_t index, uint64_t value);
 void read_memory_vaddr(uint64_t vaddr, uint8_t *data, size_t len);
+
+/* module.c */
+extern FILE *system_map_file;
+extern GArray *traced_symbols;
+extern char *trace_module_name;
+int load_traced_symbols_from_system_map(const char *module_name, FILE *mapfile);
+void free_traced_symbols(void);
 
 static inline void formalize_str(uint8_t *data, size_t size)
 {
